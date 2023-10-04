@@ -1,0 +1,4 @@
+servers:
+- listen: "0.0.0.0:7878"
+  server_name: localhost
+  proxy_pass: "127.0.0.1:25565"
