@@ -11,8 +11,10 @@ mod config;
 
 fn find_upstream(domain: &String, config: Arc<MineginxConfig>) -> Option<String> {
     for x in &config.servers {
-        if x.server_name == *domain {
-            return Some(x.proxy_pass.clone());
+        for server_name in &x.server_names {
+            if server_name == domain {
+                return Some(x.proxy_pass.clone());
+            }
         }
     }
     None

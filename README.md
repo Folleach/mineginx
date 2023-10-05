@@ -117,6 +117,12 @@ DNS records
 | A    | folleach.net | 1.1.1.1 |
 | A    | example.org  | 1.1.1.1 |
 
+## Build & Run
+
+```bash
+cargo b -r && ./target/release/mineginx
+```
+
 ## Limitations
 
 ### Max ~65k established connection to one upstream
