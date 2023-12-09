@@ -1,8 +1,8 @@
 use std::{
-    sync::Arc, fs, collections::HashMap,
+    sync::Arc, fs, collections::HashMap, time::Duration,
 };
 use config::MineginxConfig;
-use tokio::{net::{TcpListener, TcpStream}, io::{AsyncReadExt, AsyncWriteExt}, sync::oneshot::{self}, task::JoinHandle};
+use tokio::{net::{TcpListener, TcpStream}, io::{AsyncReadExt, AsyncWriteExt}, sync::oneshot::{self}, task::JoinHandle, time::timeout};
 use crate::{minecraft::serialization::{ read_string, read_var_i32, SlicedStream, ReadingError }, stream::forward_stream};
 
 mod minecraft;
@@ -20,7 +20,15 @@ fn find_upstream(domain: &String, config: Arc<MineginxConfig>) -> Option<String>
     None
 }
 
-async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
+struct HandshakePacket {
+    pub protocol_version: i32,
+    pub domain: String,
+    // not a minecraft packet fields
+    pub already_read: usize,
+    pub raw: Vec<u8>
+}
+
+async fn read_handshake_packet(client: &mut TcpStream) -> Result<HandshakePacket, ()> {
     let mut handshake: Vec<u8> = vec![0; 32];
     let mut _length: i32;
     let mut packet_id: i32;
@@ -35,9 +43,14 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
         let bslc = &mut handshake[start..end];
         let read = client.read(bslc).await;
         match read {
-            Ok(size) => already_read += size,
+            Ok(size) => {
+                if size == 0 {
+                    return Err(());
+                }
+                already_read += size;
+            },
             Err(_) => {
-                println!("error in handshake");
+                return Err(());
             }
         }
         let mut slice = SlicedStream::new(&handshake);
@@ -45,7 +58,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
             Ok(x) => _length = x,
             Err(e) => {
                 if e == ReadingError::Invalid {
-                    return;
+                    return Err(());
                 }
                 handshake.resize(handshake.len() * 2, 0);
                 continue;
@@ -55,7 +68,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
             Ok(x) => packet_id = x,
             Err(e) => {
                 if e == ReadingError::Invalid {
-                    return;
+                    return Err(());
                 }
                 handshake.resize(handshake.len() * 2, 0);
                 continue;
@@ -63,14 +76,14 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
         }
 
         if packet_id != 0 {
-            return;
+            return Err(());
         }
 
         match read_var_i32(&mut slice) {
             Ok(x) => protocol_version = x,
             Err(e) => {
                 if e == ReadingError::Invalid {
-                    return;
+                    return Err(());
                 }
                 handshake.resize(handshake.len() * 2, 0);
                 continue;
@@ -80,7 +93,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
             Ok(x) => domain = x,
             Err(e) => {
                 if e == ReadingError::Invalid {
-                    return;
+                    return Err(());
                 }
                 handshake.resize(handshake.len() * 2, 0);
                 continue;
@@ -88,16 +101,42 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
         }
         break;
     }
+    Ok(HandshakePacket {
+        domain,
+        protocol_version,
+        already_read,
+        raw: handshake
+    })
+}
 
-    let upstream_address = match find_upstream(&domain, config.clone()) {
-        Some(x) => x,
-        None => {
-            println!("there is no upstream for domain {:#?}", &domain);
+async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
+    let timeout_future = Duration::from_millis(if let Some(milliseconds) = config.handshake_timeout_ms { milliseconds } else { 10_000 });
+    let handshake_result = timeout(timeout_future, read_handshake_packet(&mut client)).await;
+    let handshake = match handshake_result {
+        Ok(result) => match result {
+            Ok(handshake) => {
+                handshake
+            }
+            Err(_) => {
+                println!("handshake failed for someone");
+                return;
+            }
+        },
+        Err(_) => {
+            println!("handshake timeout for someone");
             return;
         }
     };
 
-    println!("new connection (protocol_version: {}, domain: {}, upstream: {})", protocol_version, domain, upstream_address);
+    let upstream_address = match find_upstream(&handshake.domain, config.clone()) {
+        Some(x) => x,
+        None => {
+            println!("there is no upstream for domain {:#?}", &handshake.domain);
+            return;
+        }
+    };
+
+    println!("new connection (protocol_version: {}, domain: {}, upstream: {})", &handshake.protocol_version, &handshake.domain, upstream_address);
 
     let mut upstream = match TcpStream::connect(&upstream_address).await {
         Ok(x) => x,
@@ -106,7 +145,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
             return;
         }
     };
-    match upstream.write_all(&handshake[..already_read]).await {
+    match upstream.write_all(&handshake.raw[..handshake.already_read]).await {
         Ok(_) => {},
         Err(_) => {
             return;

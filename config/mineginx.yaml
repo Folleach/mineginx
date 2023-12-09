@@ -1,3 +1,4 @@
+handshake_timeout_ms: 30000 # 30 seconds
 servers:
 - listen: "0.0.0.0:7878"
   server_names:
