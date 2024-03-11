@@ -2,6 +2,7 @@ use std::{
     sync::Arc, fs, collections::HashMap, time::Duration,
 };
 use config::MineginxConfig;
+use minecraft::serialization::truncate_to_zero;
 use tokio::{net::{TcpListener, TcpStream}, io::{AsyncReadExt, AsyncWriteExt}, sync::oneshot::{self}, task::JoinHandle, time::timeout};
 use crate::{minecraft::serialization::{ read_string, read_var_i32, SlicedStream, ReadingError }, stream::forward_stream};
 
@@ -90,7 +91,7 @@ async fn read_handshake_packet(client: &mut TcpStream) -> Result<HandshakePacket
             }
         }
         match read_string(&mut slice) {
-            Ok(x) => domain = x,
+            Ok(x) => domain = truncate_to_zero(&x).to_string(),
             Err(e) => {
                 if e == ReadingError::Invalid {
                     return Err(());

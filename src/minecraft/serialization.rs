@@ -77,3 +77,11 @@ fn read_byte(slice: &mut SlicedStream) -> Result<u8, ReadingError> {
     slice.position = position + 1;
     return Ok(slice.stream[position]);
 }
+
+pub fn truncate_to_zero(value: &str) -> &str {
+    let index = &value.find('\0');
+    match index {
+        Some(v) => &value[0..*v],
+        None => &value
+    }
+}
