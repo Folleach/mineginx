@@ -23,6 +23,10 @@ impl<'a> SlicedStream<'a> {
         }
     }
 
+    pub fn get_position(&self) -> usize {
+        self.position
+    }
+
     pub fn remain_len(&self) -> usize {
         self.stream.len() - self.position
     }
@@ -76,6 +80,18 @@ fn read_byte(slice: &mut SlicedStream) -> Result<u8, ReadingError> {
     let position = slice.position;
     slice.position = position + 1;
     return Ok(slice.stream[position]);
+}
+
+pub fn read_unsigned_short(slice: &mut SlicedStream) -> Result<u16, ReadingError> {
+    let b1 = match read_byte(slice) {
+        Ok(x) => x,
+        Err(e) => return Err(e),
+    };
+    let b2 = match read_byte(slice) {
+        Ok(x) => x,
+        Err(e) => return Err(e),
+    };
+    return Ok(b2 as u16 | (b1 as u16) << 8);
 }
 
 pub fn truncate_to_zero(value: &str) -> &str {
