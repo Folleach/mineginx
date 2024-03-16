@@ -1,0 +1,10 @@
+[package]
+name = "mineginx"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+minecraft = { path = "../minecraft" }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+tokio = { version = "1.32.0", features = ["full"] }

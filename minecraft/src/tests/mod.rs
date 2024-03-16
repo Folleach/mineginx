@@ -1,8 +1,6 @@
-pub mod minecraft;
-
 #[cfg(test)]
 mod truncate_to_zero {
-    use crate::minecraft::serialization::truncate_to_zero;
+    use crate::serialization::truncate_to_zero;
 
     #[test]
     fn with_zero() {

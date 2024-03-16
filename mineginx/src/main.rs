@@ -2,11 +2,10 @@ use std::{
     sync::Arc, fs, collections::HashMap, time::Duration,
 };
 use config::MineginxConfig;
-use minecraft::{packets::{HandshakeC2SPacket, PacketSerializer}, serialization::truncate_to_zero};
+use minecraft::{packets::{HandshakeC2SPacket, PacketSerializer}, serialization::{read_var_i32, truncate_to_zero, ReadingError, SlicedStream}};
 use tokio::{net::{TcpListener, TcpStream}, io::{AsyncReadExt, AsyncWriteExt}, sync::oneshot::{self}, task::JoinHandle, time::timeout};
-use crate::{minecraft::serialization::{ read_var_i32, SlicedStream, ReadingError }, stream::forward_stream};
+use stream::forward_stream;
 
-mod minecraft;
 mod stream;
 mod config;
 
