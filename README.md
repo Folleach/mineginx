@@ -4,6 +4,8 @@
 Made to host multiple minecraft servers on the same ``ip:port`` with different domains.  
 Inspired by [nginx](https://nginx.org/)
 
+Can proxy anything starting from version 1.7.2 and above
+
 ## Configuration
 
 In the configuration, you can specify servers list
