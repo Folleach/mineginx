@@ -1,9 +1,44 @@
-use super::serialization::{read_string, read_unsigned_short, read_var_i32, ReadingError, SlicedStream};
+use minecraft_macros::{PacketDeserializer, PacketSerializer};
+use tokio::io::{AsyncRead, AsyncWrite};
+use uuid::Uuid;
 
-pub trait PacketSerializer<T> {
-    fn from_raw(bytes: &[u8]) -> Result<T, ReadingError>;
+use crate::serialization::{Buffer, FieldWriter};
+
+use super::serialization::{ReadingError, MinecraftStream};
+
+pub trait PacketDeserializer {
+    fn from_raw<RW>(stream: &mut MinecraftStream<RW>) -> Result<Self, ReadingError>
+    where
+        Self : Sized,
+        RW : AsyncRead + AsyncWrite + Unpin;
 }
 
+pub trait PacketSerializer {
+    fn to_raw(&self, stream: &mut Buffer) -> Option<()> where Self : Sized;
+}
+
+pub struct MinecraftPacket {
+}
+
+impl MinecraftPacket {
+    pub fn make_raw<T>(id: i32, packet: &T) -> Option<Vec<u8>> where T: PacketSerializer {
+        let mut data_buffer = Buffer::new(1024);
+        T::to_raw(packet, &mut data_buffer)?;
+        let mut packet_id_buffer = Buffer::new(5);
+        id.write(&mut packet_id_buffer);
+        let mut packet_length_buffer = Buffer::new(5);
+
+        let d2 = packet_id_buffer.take();
+        let d3 = data_buffer.take();
+        (d2.len() as i32 + d3.len() as i32).write(&mut packet_length_buffer);
+
+        let d1 = packet_length_buffer.take();
+        let array = [d1, d2, d3].concat();
+        Some(array)
+    }
+}
+
+#[derive(PacketDeserializer, PacketSerializer)]
 pub struct HandshakeC2SPacket {
     pub protocol_version: i32,
     pub domain: String,
@@ -11,26 +46,9 @@ pub struct HandshakeC2SPacket {
     pub next_state: i32
 }
 
-// todo: we need a macro for this impl
-impl PacketSerializer<HandshakeC2SPacket> for HandshakeC2SPacket {
-    fn from_raw(bytes: &[u8]) -> Result<HandshakeC2SPacket, ReadingError> {
-        let mut stream = SlicedStream::new(&bytes);
-        let protocol_version = match read_var_i32(&mut stream) {
-            Ok(value) => value,
-            Err(e) => return Err(e)
-        };
-        let domain = match read_string(&mut stream) {
-            Ok(value) => value,
-            Err(e) => return Err(e)
-        };
-        let server_port = match read_unsigned_short(&mut stream) {
-            Ok(value) => value,
-            Err(e) => return Err(e)
-        };
-        let next_state = match read_var_i32(&mut stream) {
-            Ok(value) => value,
-            Err(e) => return Err(e)
-        };
-        Ok(HandshakeC2SPacket { protocol_version, domain, server_port, next_state })
-    }
+#[derive(PacketDeserializer)]
+pub struct LoginC2SPacket {
+    pub name: String,
+    pub has_uuid: bool,
+    pub player_uuid: Uuid
 }
