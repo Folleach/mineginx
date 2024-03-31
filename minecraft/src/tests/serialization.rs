@@ -46,9 +46,9 @@ async fn write_packet() {
             next_state: 2
         }).await;
     }
-    let mut array = vec![0 as u8; 1024];
+    let mut array = vec![0_u8; 1024];
     stream.seek(std::io::SeekFrom::Start(0)).await.unwrap();
-    stream.read(&mut array[0..1024]).await.unwrap();
+    _ = stream.read(&mut array[0..1024]).await.unwrap();
     stream.seek(std::io::SeekFrom::Start(0)).await.unwrap();
     let mut minecraft = MinecraftStream::new(stream.borrow_mut(), 1024);
     let packet = minecraft.read_packet::<HandshakeC2SPacket>().await.unwrap();
@@ -60,6 +60,6 @@ async fn write_packet() {
 
 fn make_minecraft_stream(array: Vec<u8>) -> MinecraftStream<BufStream<Cursor<Vec<u8>>>> {
     let stream = BufStream::new(Cursor::new(array.clone()));
-    let minecraft = MinecraftStream::new(stream, 1024);
-    minecraft
+    
+    MinecraftStream::new(stream, 1024)
 }

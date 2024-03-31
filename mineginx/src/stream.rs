@@ -35,10 +35,7 @@ pub fn forward_stream(
                     if size == 0 {
                         if let Some(sender) = close.take() {
                             closed = true;
-                            match sender.send(()) {
-                                Err(_) => { },
-                                Ok(_) => { }
-                            }
+                            _ = sender.send(());
                         }
                     }
                     let writed = writer.write_all(&buf[..size]).await;
@@ -46,10 +43,7 @@ pub fn forward_stream(
                         Ok(_) => { },
                         Err(_) => {
                             if let Some(sender) = close.take() {
-                                match sender.send(()) {
-                                    Err(_) => { },
-                                    Ok(_) => { }
-                                }
+                                _ = sender.send(())
                             }
                             return;
                         }
@@ -57,10 +51,7 @@ pub fn forward_stream(
                 },
                 Err(_) => {
                     if let Some(sender) = close.take() {
-                        match sender.send(()) {
-                            Err(_) => { },
-                            Ok(_) => { }
-                        }
+                        _ = sender.send(());
                     }
                     return;
                 }

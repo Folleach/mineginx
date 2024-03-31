@@ -114,6 +114,7 @@ async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>) {
     }
 }
 
+#[allow(dead_code)]
 struct ListeningAddress(JoinHandle<()>);
 
 const CONFIG_FILE: &str = "./config/mineginx.yaml";

@@ -17,7 +17,7 @@ pub enum ReadingError {
 impl From<ReadingError> for () {
     fn from(value: ReadingError) -> Self {
         let _ = value;
-        ()
+        
     }
 }
 
@@ -55,7 +55,7 @@ pub struct Buffer {
 impl Buffer {
     pub fn new(init_size: usize) -> Buffer {
         Buffer {
-            array: vec![0 as u8; init_size],
+            array: vec![0_u8; init_size],
             position: 0
         }
     }
@@ -77,13 +77,13 @@ impl Buffer {
     }
 
     fn expand(&mut self) {
-        let mut new_vec = vec![0 as u8; self.array.len() * 2];
+        let mut new_vec = vec![0_u8; self.array.len() * 2];
         new_vec[0..self.array.len()].copy_from_slice(&self.array);
         self.array = new_vec;
     }
 
     pub(crate) fn write_field<T>(&mut self, value: &T) -> Option<()> where T: FieldWriter {
-        T::write(&value, self)
+        T::write(value, self)
     }
 }
 
@@ -116,11 +116,11 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
     }
 
     pub fn data_len(&self) -> usize {
-        return self.free - self.position + 1;
+        self.free - self.position + 1
     }
 
     pub fn take_buffer(&mut self) -> Vec<u8> {
-        return self.buffer[self.position..self.free].to_vec();
+        self.buffer[self.position..self.free].to_vec()
     }
 
     /// Reads signature of packet to the end  
@@ -199,7 +199,7 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
             Ok(_) => { },
             Err(_) => return None,
         };
-        return Some(());
+        Some(())
     }
 
     pub(crate) fn read_field<T>(&mut self) -> Result<T, ReadingError> where T: FieldReader {
@@ -308,7 +308,7 @@ impl FieldReader for String {
         let mut vec: Vec<u8> = vec![0; length];
         vec.copy_from_slice(&stream.buffer[stream.position..stream.position + length]);
         stream.position += length;
-        return Ok(String::from_utf8(vec).unwrap());
+        Ok(String::from_utf8(vec).unwrap())
     }
 }
 
@@ -336,7 +336,7 @@ impl FieldReader for u16 {
             Ok(x) => x,
             Err(e) => return Err(e),
         };
-        return Ok(b2 as u16 | (b1 as u16) << 8);
+        Ok(b2 as u16 | (b1 as u16) << 8)
     }
 }
 
@@ -363,7 +363,7 @@ impl FieldReader for u8 {
         }
         let position = stream.position;
         stream.position = position + 1;
-        return Ok(stream.buffer[position]);
+        Ok(stream.buffer[position])
     }
 }
 
@@ -376,9 +376,9 @@ impl FieldReader for Uuid {
         match Uuid::from_slice(&stream.buffer[stream.position..stream.position + 16]) {
             Ok(v) => {
                 stream.position += 16;
-                return Ok(v);
+                Ok(v)
             },
-            Err(_) => return Err(ReadingError::Insufficient)
+            Err(_) => Err(ReadingError::Insufficient)
         }
     }
 }
@@ -387,6 +387,6 @@ pub fn truncate_to_zero(value: &str) -> &str {
     let index = &value.find('\0');
     match index {
         Some(v) => &value[0..*v],
-        None => &value
+        None => value
     }
 }

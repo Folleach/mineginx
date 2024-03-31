@@ -30,7 +30,7 @@ pub fn packet_deserializer_derive(input: TokenStream) -> TokenStream {
         }
     };
 
-    return gen.into();
+    gen.into()
 }
 
 #[proc_macro_derive(PacketSerializer)]
@@ -59,5 +59,5 @@ pub fn packet_serializer_derive(input: TokenStream) -> TokenStream {
         }
     };
 
-    return gen.into();
+    gen.into()
 }
