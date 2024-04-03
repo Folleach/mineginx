@@ -138,7 +138,10 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
                         return Err(e);
                     }
                     else if e == ReadingError::Insufficient {
-                        _ = self.fill_buffer_from_source(0).await;
+                        match self.fill_buffer_from_source(0).await {
+                            Ok(_) => { },
+                            Err(_) => return Err(ReadingError::Closed),
+                        }
                         continue;
                     }
                     return Err(ReadingError::Closed);
@@ -154,7 +157,10 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
                         return Err(e);
                     }
                     else if e == ReadingError::Insufficient {
-                        _ = self.fill_buffer_from_source(0).await;
+                        match self.fill_buffer_from_source(0).await {
+                            Ok(_) => { },
+                            Err(_) => return Err(ReadingError::Closed),
+                        }
                         continue;
                     }
                     return Err(ReadingError::Closed);
