@@ -1,7 +1,8 @@
+
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::packets::{MinecraftPacket, PacketDeserializer, PacketSerializer};
+use crate::{buffer::Buffer, packets::{MinecraftPacket, PacketDeserializer, PacketSerializer}};
 
 const SEGMENT_BITS: i32 = 0x7F;
 const CONTINUE_BIT: i32 = 0x80;
@@ -47,41 +48,7 @@ pub(crate) trait FieldWriter {
     fn write(&self, stream: &mut Buffer) -> Option<()> where Self: Sized;
 }
 
-pub struct Buffer {
-    array: Vec<u8>,
-    position: usize
-}
-
 impl Buffer {
-    pub fn new(init_size: usize) -> Buffer {
-        Buffer {
-            array: vec![0_u8; init_size],
-            position: 0
-        }
-    }
-
-    pub fn write_byte(&mut self, value: u8) {
-        if self.array.len() == self.position {
-            self.expand();
-        }
-        self.array[self.position] = value;
-        self.position += 1;
-    }
-
-    pub fn take(&self) -> &[u8] {
-        &self.array[0..self.position]
-    }
-
-    pub fn reset(&mut self) {
-        self.position = 0;
-    }
-
-    fn expand(&mut self) {
-        let mut new_vec = vec![0_u8; self.array.len() * 2];
-        new_vec[0..self.array.len()].copy_from_slice(&self.array);
-        self.array = new_vec;
-    }
-
     pub(crate) fn write_field<T>(&mut self, value: &T) -> Option<()> where T: FieldWriter {
         T::write(value, self)
     }
@@ -362,6 +329,13 @@ impl FieldReader for bool {
     }
 }
 
+impl FieldWriter for bool {
+    fn write(&self, stream: &mut Buffer) -> Option<()> {
+        stream.write_byte(if *self { 1 } else { 0 });
+        Some(())
+    }
+}
+
 impl FieldReader for u8 {
     fn read<RW: AsyncRead + AsyncWrite + Unpin>(stream: &mut MinecraftStream<RW>) -> Result<Self, ReadingError> where Self : Sized {
         if stream.position >= stream.free {
@@ -386,6 +360,15 @@ impl FieldReader for Uuid {
             },
             Err(_) => Err(ReadingError::Insufficient)
         }
+    }
+}
+
+impl FieldWriter for Uuid {
+    fn write(&self, stream: &mut Buffer) -> Option<()> {
+        for &byte in self.as_bytes() {
+            stream.write_byte(byte);
+        }
+        Some(())
     }
 }
 

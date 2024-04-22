@@ -2,7 +2,7 @@ use minecraft_macros::{PacketDeserializer, PacketSerializer};
 use tokio::io::{AsyncRead, AsyncWrite};
 use uuid::Uuid;
 
-use crate::serialization::{Buffer, FieldWriter};
+use crate::{buffer::Buffer, serialization::FieldWriter};
 
 use super::serialization::{ReadingError, MinecraftStream};
 

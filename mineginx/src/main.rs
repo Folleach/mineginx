@@ -3,7 +3,7 @@ use std::{
 };
 use config::MineginxConfig;
 use minecraft::{packets::{HandshakeC2SPacket, MinecraftPacket}, serialization::{truncate_to_zero, MinecraftStream}};
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, sync::oneshot, task::JoinHandle, time::timeout};
+use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, signal::unix::SignalKind, sync::oneshot, task::JoinHandle, time::timeout};
 use stream::forward_stream;
 
 mod stream;
