@@ -1,5 +1,5 @@
 use std::{
-    borrow::BorrowMut, collections::HashMap, fs, sync::Arc, time::Duration
+    borrow::BorrowMut, collections::HashMap, env, fs, process::ExitCode, sync::Arc, time::Duration
 };
 use config::MineginxConfig;
 use log::{error, info, warn};
@@ -116,27 +116,52 @@ async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>) {
     }
 }
 
+async fn get_config() -> Option<MineginxConfig> {
+    let yaml = match fs::read(CONFIG_FILE) {
+        Ok(x) => x,
+        Err(err) => {
+            error!("failed to open config file: '{}', error: {err}", CONFIG_FILE);
+            return None;
+        }
+    };
+    return match serde_yaml::from_slice(&yaml) {
+        Ok(c) => Some(c),
+        Err(err) => {
+            error!("failed to parse config file: '{}', error: {err}", CONFIG_FILE);
+            None
+        }
+    }
+}
+
+async fn check_config() -> Option<MineginxConfig> {
+    info!("trying to parse config and exit");
+    let config = get_config().await;
+    match config {
+        Some(_) => info!("it's fine! let's try to run"),
+        None => error!("there are some errors")
+    };
+    config
+}
+
 #[allow(dead_code)]
 struct ListeningAddress(JoinHandle<()>);
 
 const CONFIG_FILE: &str = "./config/mineginx.yaml";
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() {
+async fn main() -> ExitCode {
     SimpleLogger::new().init().unwrap();
-    let yaml = match fs::read(CONFIG_FILE) {
-        Ok(x) => x,
-        Err(err) => {
-            error!("failed to open config file: '{}', error: {err}", CONFIG_FILE);
-            return;
-        }
-    };
-    let config: Arc<MineginxConfig> = match serde_yaml::from_slice(&yaml) {
-        Ok(c) => Arc::new(c),
-        Err(err) => {
-            error!("failed to parse config file: '{}', error: {err}", CONFIG_FILE);
-            return;
-        }
+    let mut args = env::args();
+    if let Some(_) = args.find(|x| x == "-t") {
+        return match check_config().await {
+            Some(_) => ExitCode::from(0),
+            None => ExitCode::from(1)
+        };
+    }
+
+    let config: Arc<MineginxConfig> = match get_config().await {
+        Some(x) => Arc::new(x),
+        None => return ExitCode::from(2)
     };
     let mut listening = HashMap::<String, ListeningAddress>::new();
     for server in &config.servers {
@@ -153,4 +178,5 @@ async fn main() {
     }
     tokio::signal::ctrl_c().await.unwrap();
     info!("shutdown");
+    ExitCode::from(0)
 }
