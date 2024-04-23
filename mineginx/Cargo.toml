@@ -1,7 +1,12 @@
 [package]
 name = "mineginx"
-version = "0.1.0"
+version = "0.1.1"
+readme = "README.md"
+description = "Lightweight minecraft proxy server"
+authors = ["Folleach"]
+keywords = ["minecraft", "proxy"]
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 minecraft = { path = "../minecraft" }

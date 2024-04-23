@@ -159,6 +159,7 @@ async fn main() -> ExitCode {
         };
     }
 
+    info!("mineginx version: {} ({})", env!("MINEGINX_VERSION"), env!("MINEGINX_HASH"));
     let config: Arc<MineginxConfig> = match get_config().await {
         Some(x) => Arc::new(x),
         None => return ExitCode::from(2)
