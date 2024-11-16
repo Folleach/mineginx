@@ -1,0 +1,24 @@
+type: object
+properties:
+  handshake_timeout_ms:
+    type: integer
+  servers:
+    type: array
+    items:
+      type: object
+      properties:
+        listen:
+          type: string
+        server_names:
+          type: array
+          items:
+            type: string
+        proxy_pass:
+          type: string
+      required:
+        - listen
+        - server_names
+        - proxy_pass
+required:
+  - handshake_timeout_ms
+  - servers
