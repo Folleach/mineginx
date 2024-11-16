@@ -25,7 +25,7 @@ jobs:
       run: |
         docker build -t mineginx .
         mkdir release
-        docker cp $(docker create --name tc test):/app/mineginx ./release
+        docker cp $(docker create --name tc mineginx):/app/mineginx ./release
         docker rm tc
     - name: To GitHub Release
       uses: softprops/action-gh-release@v1
