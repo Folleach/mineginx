@@ -1,7 +1,7 @@
 use std::{
-    borrow::BorrowMut, collections::HashMap, env, fs, process::ExitCode, sync::Arc, time::Duration
+    borrow::BorrowMut, collections::HashMap, env, fs::{self}, path::Path, process::ExitCode, sync::Arc, time::Duration
 };
-use config::MineginxConfig;
+use config::{MinecraftServerDescription, MineginxConfig};
 use log::{error, info, warn};
 use minecraft::{packets::{HandshakeC2SPacket, MinecraftPacket}, serialization::{truncate_to_zero, MinecraftStream}};
 use simple_logger::SimpleLogger;
@@ -120,17 +120,51 @@ async fn get_config() -> Option<MineginxConfig> {
     let yaml = match fs::read(CONFIG_FILE) {
         Ok(x) => x,
         Err(err) => {
-            error!("failed to open config file: '{}', error: {err}", CONFIG_FILE);
+            error!("failed to open config file: '{}': {err}", CONFIG_FILE);
             return None;
         }
     };
     return match serde_yaml::from_slice(&yaml) {
         Ok(c) => Some(c),
         Err(err) => {
-            error!("failed to parse config file: '{}', error: {err}", CONFIG_FILE);
+            error!("failed to parse config file: '{}': {err}", CONFIG_FILE);
             None
         }
     }
+}
+
+async fn generate_config() -> Option<MineginxConfig> {
+    info!("generate new configuration file");
+    let default_server = MinecraftServerDescription {
+        listen: "0.0.0.0:25565".to_string(),
+        server_names: vec!["mineginx.localhost".to_string()],
+        proxy_pass: "127.0.0.1:7878".to_string()
+    };
+    let servers: Vec<MinecraftServerDescription> = vec![default_server];
+    let config = MineginxConfig {
+        handshake_timeout_ms: Some(30),
+        servers
+    };
+    let yaml = match serde_yaml::to_string(&config) {
+        Ok(x) => x,
+        Err(err) => {
+            error!("failed to serialize default configuration: {}", err);
+            return None;
+        }
+    };
+
+    if !Path::new("./config").exists() {
+        if let Err(err) = fs::create_dir("./config") {
+            error!("failed to create config directory: {}", err);
+            return None;
+        };
+    }
+    if let Err(err) = fs::write("./config/mineginx.yaml", yaml) {
+        error!("failed to save default configuration: {}", err);
+        return None;
+    }
+
+    return Some(config);
 }
 
 async fn check_config() -> Option<MineginxConfig> {
@@ -162,7 +196,10 @@ async fn main() -> ExitCode {
     info!("mineginx version: {} ({})", env!("MINEGINX_VERSION"), env!("MINEGINX_HASH"));
     let config: Arc<MineginxConfig> = match get_config().await {
         Some(x) => Arc::new(x),
-        None => return ExitCode::from(2)
+        None => match generate_config().await {
+            Some(x) => Arc::new(x),
+            None => return ExitCode::from(2)
+        }
     };
     let mut listening = HashMap::<String, ListeningAddress>::new();
     for server in &config.servers {

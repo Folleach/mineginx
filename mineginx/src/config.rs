@@ -9,6 +9,6 @@ pub struct MinecraftServerDescription {
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct MineginxConfig {
-    pub servers: Vec<MinecraftServerDescription>,
-    pub handshake_timeout_ms: Option<u64>
+    pub handshake_timeout_ms: Option<u64>,
+    pub servers: Vec<MinecraftServerDescription>
 }
