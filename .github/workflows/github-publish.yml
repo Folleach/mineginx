@@ -1,0 +1,34 @@
+name: Publish to GitHub Releases
+
+on:
+  release:
+    types: [ created ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+    - uses: actions/checkout@v3
+    - name: Build through Docker
+      run: |
+        docker build -t mineginx .
+        mkdir release
+        docker cp $(docker create --name tc test):/app/mineginx ./release
+        docker rm tc
+    - name: To GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          ./release/*
