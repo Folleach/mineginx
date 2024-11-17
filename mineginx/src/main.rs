@@ -142,7 +142,7 @@ async fn generate_config() -> Option<MineginxConfig> {
     };
     let servers: Vec<MinecraftServerDescription> = vec![default_server];
     let config = MineginxConfig {
-        handshake_timeout_ms: Some(30),
+        handshake_timeout_ms: Some(30_000),
         servers
     };
     let yaml = match serde_yaml::to_string(&config) {
