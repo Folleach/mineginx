@@ -11,11 +11,11 @@ use stream::forward_stream;
 mod stream;
 mod config;
 
-fn find_upstream(domain: &String, config: Arc<MineginxConfig>) -> Option<String> {
+fn find_upstream(domain: &String, config: Arc<MineginxConfig>) -> Option<MinecraftServerDescription> {
     for x in &config.servers {
         for server_name in &x.server_names {
             if server_name == domain {
-                return Some(x.proxy_pass.clone());
+                return Some(x.clone());
             }
         }
     }
@@ -52,7 +52,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
     };
 
     let domain = truncate_to_zero(&handshake.domain).to_string();
-    let upstream_address = match find_upstream(&domain, config.clone()) {
+    let upstream_server = match find_upstream(&domain, config.clone()) {
         Some(x) => x,
         None => {
             warn!("there is no upstream for domain {:#?}", &domain);
@@ -60,12 +60,12 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
         }
     };
 
-    info!("new connection (protocol_version: {}, domain: {}, upstream: {})", &handshake.protocol_version, &domain, upstream_address);
+    info!("new connection (protocol_version: {}, domain: {}, upstream: {})", &handshake.protocol_version, &domain, upstream_server.proxy_pass);
 
-    let mut upstream = match TcpStream::connect(&upstream_address).await {
+    let mut upstream = match TcpStream::connect(&upstream_server.proxy_pass).await {
         Ok(x) => x,
         Err(e) => {
-            error!("failed to connect upstream: {}, {e}", &upstream_address);
+            error!("failed to connect upstream: {}, {e}", &upstream_server.proxy_pass);
             return;
         }
     };
@@ -84,6 +84,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
             return;
         }
     }
+
     let (client_reader, client_writer) = client.into_split();
     let (upstream_reader, upstream_writer) = upstream.into_split();
     let (client_close_sender, client_close_receiver) = oneshot::channel::<()>();
@@ -92,12 +93,14 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
         client_close_sender,
         upstream_close_receiver,
         client_reader,
-        upstream_writer);
+        upstream_writer,
+        upstream_server.buffer_size as usize);
     forward_stream(
         upstream_close_sender,
         client_close_receiver,
         upstream_reader,
-        client_writer);
+        client_writer,
+        upstream_server.buffer_size as usize);
 }
 
 async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>) {
@@ -138,7 +141,8 @@ async fn generate_config() -> Option<MineginxConfig> {
     let default_server = MinecraftServerDescription {
         listen: "0.0.0.0:25565".to_string(),
         server_names: vec!["mineginx.localhost".to_string()],
-        proxy_pass: "127.0.0.1:7878".to_string()
+        proxy_pass: "127.0.0.1:7878".to_string(),
+        buffer_size: 4096
     };
     let servers: Vec<MinecraftServerDescription> = vec![default_server];
     let config = MineginxConfig {

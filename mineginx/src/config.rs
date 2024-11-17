@@ -1,10 +1,11 @@
 use serde::{Serialize, Deserialize};
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct MinecraftServerDescription {
     pub listen: String,
     pub server_names: Vec<String>,
-    pub proxy_pass: String
+    pub proxy_pass: String,
+    pub buffer_size: u32
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]

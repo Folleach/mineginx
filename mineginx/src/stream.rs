@@ -13,9 +13,10 @@ pub fn forward_stream(
     close: Sender<()>,
     close_by_other: Receiver<()>,
     mut reader: OwnedReadHalf,
-    mut writer: OwnedWriteHalf) -> JoinHandle<()> {
+    mut writer: OwnedWriteHalf,
+    buffer_size: usize) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut buf = vec![0; 2048];
+        let mut buf = vec![0; buffer_size];
         let mut close = Some(close);
         let mut close_by_other = Some(close_by_other);
         let mut closed = false;
