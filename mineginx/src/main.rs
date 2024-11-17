@@ -102,13 +102,13 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
         upstream_close_receiver,
         client_reader,
         upstream_writer,
-        upstream_server.buffer_size as usize);
+        if let Some(buffer_size) = upstream_server.buffer_size { buffer_size  as usize } else { 2048 });
     forward_stream(
         upstream_close_sender,
         client_close_receiver,
         upstream_reader,
         client_writer,
-        upstream_server.buffer_size as usize);
+        if let Some(buffer_size) = upstream_server.buffer_size { buffer_size  as usize } else { 2048 });
 }
 
 async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>) {
@@ -150,7 +150,7 @@ async fn generate_config() -> Option<MineginxConfig> {
         listen: "0.0.0.0:25565".to_string(),
         server_names: vec!["mineginx.localhost".to_string()],
         proxy_pass: "127.0.0.1:7878".to_string(),
-        buffer_size: 4096
+        buffer_size: None
     };
     let servers: Vec<MinecraftServerDescription> = vec![default_server];
     let config = MineginxConfig {

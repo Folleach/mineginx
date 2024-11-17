@@ -5,7 +5,8 @@ pub struct MinecraftServerDescription {
     pub listen: String,
     pub server_names: Vec<String>,
     pub proxy_pass: String,
-    pub buffer_size: u32
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buffer_size: Option<u32>
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
