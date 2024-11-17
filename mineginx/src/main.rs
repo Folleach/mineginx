@@ -32,6 +32,10 @@ async fn read_handshake_packet(client: &mut MinecraftStream<&mut TcpStream>) -> 
 }
 
 async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
+    if let Err(e) = client.set_nodelay(true) {
+        error!("failed to set no_delay for client: {}", e);
+        return;
+    }
     let mut minecraft = MinecraftStream::new(client.borrow_mut(), 4096);
     let timeout_future = Duration::from_millis(if let Some(milliseconds) = config.handshake_timeout_ms { milliseconds } else { 10_000 });
     let handshake_result = timeout(timeout_future, read_handshake_packet(&mut minecraft)).await;
@@ -69,6 +73,10 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
             return;
         }
     };
+    if let Err(e) = upstream.set_nodelay(true) {
+        error!("failed to set no_delay for upstream: {}", e);
+        return;
+    }
     let packet = match MinecraftPacket::make_raw(0, &handshake) {
         Some(v) => v,
         None => return
