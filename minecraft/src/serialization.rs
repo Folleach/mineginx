@@ -1,36 +1,38 @@
-
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::{buffer::Buffer, packets::{MinecraftPacket, PacketDeserializer, PacketSerializer}};
+use crate::{
+    buffer::Buffer,
+    packets::{MinecraftPacket, PacketDeserializer, PacketSerializer},
+};
 
-const SEGMENT_BITS: i32 = 0x7F;
-const CONTINUE_BIT: i32 = 0x80;
+const SEGMENT_BITS: u32 = 0x7F;
+const CONTINUE_BIT: u32 = 0x80;
 
-#[derive(Debug)]
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum ReadingError {
     Insufficient,
     Invalid,
-    Closed
+    Closed,
 }
 
 impl From<ReadingError> for () {
     fn from(value: ReadingError) -> Self {
         let _ = value;
-        
     }
 }
 
-#[derive(Debug)]
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Signature {
     pub length: usize,
-    pub packet_id: i32
+    pub packet_id: i32,
 }
 
 impl FieldWriter for Signature {
-    fn write(&self, stream: &mut Buffer) -> Option<()> where Self: Sized {
+    fn write(&self, stream: &mut Buffer) -> Option<()>
+    where
+        Self: Sized,
+    {
         (self.length as i32).write(stream);
         0.write(stream);
         Some(())
@@ -45,11 +47,16 @@ pub(crate) trait FieldReader {
 }
 
 pub(crate) trait FieldWriter {
-    fn write(&self, stream: &mut Buffer) -> Option<()> where Self: Sized;
+    fn write(&self, stream: &mut Buffer) -> Option<()>
+    where
+        Self: Sized;
 }
 
 impl Buffer {
-    pub(crate) fn write_field<T>(&mut self, value: &T) -> Option<()> where T: FieldWriter {
+    pub(crate) fn write_field<T>(&mut self, value: &T) -> Option<()>
+    where
+        T: FieldWriter,
+    {
         T::write(value, self)
     }
 }
@@ -61,7 +68,10 @@ impl Buffer {
 /// `position` points to the start of used memory  
 /// `free` points to the start of not used yet  
 /// if there is no space left in not used yet memory, used memory will copy to the start of buffer
-pub struct MinecraftStream<RW> where RW : AsyncRead + AsyncWrite + Unpin {
+pub struct MinecraftStream<RW>
+where
+    RW: AsyncRead + AsyncWrite + Unpin,
+{
     buffer: Vec<u8>,
     client: RW,
     free: usize,
@@ -74,7 +84,7 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
             buffer: vec![0; init_buffer_size],
             client,
             position: 0,
-            free: 0
+            free: 0,
         }
     }
 
@@ -103,10 +113,9 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
                 Err(e) => {
                     if e == ReadingError::Invalid {
                         return Err(e);
-                    }
-                    else if e == ReadingError::Insufficient {
+                    } else if e == ReadingError::Insufficient {
                         match self.fill_buffer_from_source(0).await {
-                            Ok(_) => { },
+                            Ok(_) => {}
                             Err(_) => return Err(ReadingError::Closed),
                         }
                         continue;
@@ -122,10 +131,9 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
                 Err(e) => {
                     if e == ReadingError::Invalid {
                         return Err(e);
-                    }
-                    else if e == ReadingError::Insufficient {
+                    } else if e == ReadingError::Insufficient {
                         match self.fill_buffer_from_source(0).await {
-                            Ok(_) => { },
+                            Ok(_) => {}
                             Err(_) => return Err(ReadingError::Closed),
                         }
                         continue;
@@ -142,17 +150,20 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
 
         Ok(Signature {
             packet_id,
-            length: length as usize
+            length: length as usize,
         })
     }
 
     /// Reads `data` field of packet to the end  
     /// https://wiki.vg/Protocol#Packet_format
-    pub async fn read_data<T>(&mut self, signature: Signature) -> Result<T, ReadingError> where T : PacketDeserializer {
+    pub async fn read_data<T>(&mut self, signature: Signature) -> Result<T, ReadingError>
+    where
+        T: PacketDeserializer,
+    {
         if signature.length > self.data_len() {
             match &self.fill_buffer_from_source(signature.length).await {
-                Ok(_) => {},
-                Err(_) => return Err(ReadingError::Closed)
+                Ok(_) => {}
+                Err(_) => return Err(ReadingError::Closed),
             };
         }
 
@@ -161,21 +172,30 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
 
     /// Reads **exactly this packet** to the end ignoring packet id from signature.  
     /// Return error if client close the connection
-    pub async fn read_packet<T>(&mut self) -> Result<T, ReadingError> where T: PacketDeserializer {
+    pub async fn read_packet<T>(&mut self) -> Result<T, ReadingError>
+    where
+        T: PacketDeserializer,
+    {
         let signature = self.read_signature().await?;
         self.read_data(signature).await
     }
 
-    pub async fn write_packet<T>(&mut self, packet: &T) -> Option<()> where T: PacketSerializer {
+    pub async fn write_packet<T>(&mut self, packet: &T) -> Option<()>
+    where
+        T: PacketSerializer,
+    {
         let packet = MinecraftPacket::make_raw(0, packet)?;
         match self.client.write_all(&packet[0..packet.len()]).await {
-            Ok(_) => { },
+            Ok(_) => {}
             Err(_) => return None,
         };
         Some(())
     }
 
-    pub(crate) fn read_field<T>(&mut self) -> Result<T, ReadingError> where T: FieldReader {
+    pub(crate) fn read_field<T>(&mut self) -> Result<T, ReadingError>
+    where
+        T: FieldReader,
+    {
         T::read(self)
     }
 
@@ -198,8 +218,7 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
         if self.free >= self.buffer.len() {
             if self.position != 0 {
                 self.copy_buffer_to_start();
-            }
-            else {
+            } else {
                 self.expand_buffer();
             }
         }
@@ -212,7 +231,7 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
                         return Err(());
                     }
                     self.free += size;
-                },
+                }
                 Err(_) => {
                     return Err(());
                 }
@@ -228,17 +247,19 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
 }
 
 impl FieldReader for i32 {
-    fn read<RW: AsyncRead + AsyncWrite + Unpin>(stream: &mut MinecraftStream<RW>) -> Result<Self, ReadingError> {
+    fn read<RW: AsyncRead + AsyncWrite + Unpin>(
+        stream: &mut MinecraftStream<RW>,
+    ) -> Result<Self, ReadingError> {
         let mut value = 0;
         let mut current_position = 0;
-        let mut current_byte: i32;
+        let mut current_byte: u32;
         let mut index = stream.position;
 
         loop {
             if index >= stream.free {
                 return Err(ReadingError::Insufficient);
             }
-            current_byte = stream.buffer[index] as i32;
+            current_byte = stream.buffer[index] as u32;
             index += 1;
             value |= (current_byte & SEGMENT_BITS) << current_position;
 
@@ -252,26 +273,28 @@ impl FieldReader for i32 {
         }
 
         stream.position = index;
-        Ok(value)
+        Ok(value as i32)
     }
 }
 
 impl FieldWriter for i32 {
     fn write(&self, stream: &mut Buffer) -> Option<()> {
-        let mut value = *self;
+        let mut value = *self as u32;
         loop {
-            if (value & !SEGMENT_BITS) == 0 {
+            if (value & !(SEGMENT_BITS as u32)) == 0 {
                 stream.write_byte(value as u8);
-                return Some(())
+                return Some(());
             }
-            stream.write_byte(((value & SEGMENT_BITS) | CONTINUE_BIT) as u8);
+            stream.write_byte(((value & SEGMENT_BITS as u32) | CONTINUE_BIT as u32) as u8);
             value >>= 7;
         }
     }
 }
 
 impl FieldReader for String {
-    fn read<RW: AsyncRead + AsyncWrite + Unpin>(stream: &mut MinecraftStream<RW>) -> Result<Self, ReadingError> {
+    fn read<RW: AsyncRead + AsyncWrite + Unpin>(
+        stream: &mut MinecraftStream<RW>,
+    ) -> Result<Self, ReadingError> {
         // todo: there is a bug - read_field changes position of the stream, but below can happen reading error if packet doesn't fully read
         let length = stream.read_field::<i32>()? as usize;
 
@@ -297,7 +320,9 @@ impl FieldWriter for String {
 }
 
 impl FieldReader for u16 {
-    fn read<RW: AsyncRead + AsyncWrite + Unpin>(stream: &mut MinecraftStream<RW>) -> Result<Self, ReadingError> {
+    fn read<RW: AsyncRead + AsyncWrite + Unpin>(
+        stream: &mut MinecraftStream<RW>,
+    ) -> Result<Self, ReadingError> {
         if stream.data_len() < 2 {
             return Err(ReadingError::Insufficient);
         }
@@ -323,7 +348,9 @@ impl FieldWriter for u16 {
 }
 
 impl FieldReader for bool {
-    fn read<RW: AsyncRead + AsyncWrite + Unpin>(stream: &mut MinecraftStream<RW>) -> Result<Self, ReadingError> {
+    fn read<RW: AsyncRead + AsyncWrite + Unpin>(
+        stream: &mut MinecraftStream<RW>,
+    ) -> Result<Self, ReadingError> {
         let byte = stream.read_field::<u8>()?;
         Ok(byte != 0)
     }
@@ -337,7 +364,12 @@ impl FieldWriter for bool {
 }
 
 impl FieldReader for u8 {
-    fn read<RW: AsyncRead + AsyncWrite + Unpin>(stream: &mut MinecraftStream<RW>) -> Result<Self, ReadingError> where Self : Sized {
+    fn read<RW: AsyncRead + AsyncWrite + Unpin>(
+        stream: &mut MinecraftStream<RW>,
+    ) -> Result<Self, ReadingError>
+    where
+        Self: Sized,
+    {
         if stream.position >= stream.free {
             return Err(ReadingError::Insufficient);
         }
@@ -348,7 +380,9 @@ impl FieldReader for u8 {
 }
 
 impl FieldReader for Uuid {
-    fn read<RW: AsyncRead + AsyncWrite + Unpin>(stream: &mut MinecraftStream<RW>) -> Result<Self, ReadingError> {
+    fn read<RW: AsyncRead + AsyncWrite + Unpin>(
+        stream: &mut MinecraftStream<RW>,
+    ) -> Result<Self, ReadingError> {
         if stream.data_len() < 16 {
             return Err(ReadingError::Insufficient);
         }
@@ -357,8 +391,8 @@ impl FieldReader for Uuid {
             Ok(v) => {
                 stream.position += 16;
                 Ok(v)
-            },
-            Err(_) => Err(ReadingError::Insufficient)
+            }
+            Err(_) => Err(ReadingError::Insufficient),
         }
     }
 }
@@ -376,6 +410,6 @@ pub fn truncate_to_zero(value: &str) -> &str {
     let index = &value.find('\0');
     match index {
         Some(v) => &value[0..*v],
-        None => value
+        None => value,
     }
 }
