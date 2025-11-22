@@ -6,8 +6,8 @@ use crate::{
     packets::{MinecraftPacket, PacketDeserializer, PacketSerializer},
 };
 
-const SEGMENT_BITS: i32 = 0x7F;
-const CONTINUE_BIT: i32 = 0x80;
+const SEGMENT_BITS: u32 = 0x7F;
+const CONTINUE_BIT: u32 = 0x80;
 
 #[derive(Debug, PartialEq)]
 pub enum ReadingError {
@@ -252,14 +252,14 @@ impl FieldReader for i32 {
     ) -> Result<Self, ReadingError> {
         let mut value = 0;
         let mut current_position = 0;
-        let mut current_byte: i32;
+        let mut current_byte: u32;
         let mut index = stream.position;
 
         loop {
             if index >= stream.free {
                 return Err(ReadingError::Insufficient);
             }
-            current_byte = stream.buffer[index] as i32;
+            current_byte = stream.buffer[index] as u32;
             index += 1;
             value |= (current_byte & SEGMENT_BITS) << current_position;
 
@@ -273,7 +273,7 @@ impl FieldReader for i32 {
         }
 
         stream.position = index;
-        Ok(value)
+        Ok(value as i32)
     }
 }
 
