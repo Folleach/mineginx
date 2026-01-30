@@ -37,7 +37,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
         return;
     }
     let mut minecraft = MinecraftStream::new(client.borrow_mut(), 4096);
-    let timeout_future = Duration::from_millis(if let Some(milliseconds) = config.handshake_timeout_ms { milliseconds } else { 10_000 });
+    let timeout_future = Duration::from_millis(config.handshake_timeout_ms.unwrap_or(10_000));
     let handshake_result = timeout(timeout_future, read_handshake_packet(&mut minecraft)).await;
     let handshake = match handshake_result {
         Ok(result) => match result {
@@ -192,7 +192,7 @@ const CONFIG_FILE: &str = "./config/mineginx.yaml";
 async fn main() -> ExitCode {
     SimpleLogger::new().init().unwrap();
     let mut args = env::args();
-    if let Some(_) = args.find(|x| x == "-t") {
+    if args.any(|x| &x == "-t") {
         return match check_config().await {
             Some(_) => ExitCode::from(0),
             None => ExitCode::from(1)

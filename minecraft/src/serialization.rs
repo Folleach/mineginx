@@ -281,11 +281,11 @@ impl FieldWriter for i32 {
     fn write(&self, stream: &mut Buffer) -> Option<()> {
         let mut value = *self as u32;
         loop {
-            if (value & !(SEGMENT_BITS as u32)) == 0 {
+            if (value & !SEGMENT_BITS) == 0 {
                 stream.write_byte(value as u8);
                 return Some(());
             }
-            stream.write_byte(((value & SEGMENT_BITS as u32) | CONTINUE_BIT as u32) as u8);
+            stream.write_byte(((value & SEGMENT_BITS) | CONTINUE_BIT) as u8);
             value >>= 7;
         }
     }
@@ -326,14 +326,8 @@ impl FieldReader for u16 {
         if stream.data_len() < 2 {
             return Err(ReadingError::Insufficient);
         }
-        let b1 = match stream.read_field::<u8>() {
-            Ok(x) => x,
-            Err(e) => return Err(e),
-        };
-        let b2 = match stream.read_field::<u8>() {
-            Ok(x) => x,
-            Err(e) => return Err(e),
-        };
+        let b1 = stream.read_field::<u8>()?;
+        let b2 = stream.read_field::<u8>()?;
         Ok(b2 as u16 | (b1 as u16) << 8)
     }
 }
