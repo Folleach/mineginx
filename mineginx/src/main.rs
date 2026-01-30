@@ -1,5 +1,5 @@
 use std::{
-    borrow::BorrowMut, collections::HashMap, env, fs::{self}, path::Path, process::ExitCode, sync::Arc, time::Duration
+    borrow::BorrowMut, collections::HashMap, env, fs::{self}, io::ErrorKind, path::Path, process::ExitCode, sync::Arc, time::Duration
 };
 use config::{MinecraftServerDescription, MineginxConfig};
 use log::{error, info, warn};
@@ -127,24 +127,19 @@ async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>) {
     }
 }
 
-async fn get_config() -> Option<MineginxConfig> {
-    let yaml = match fs::read(CONFIG_FILE) {
-        Ok(x) => x,
-        Err(err) => {
-            error!("failed to open config file: '{}': {err}", CONFIG_FILE);
-            return None;
-        }
+fn read_config() -> Result<MineginxConfig, String> {
+    let config = fs::read(CONFIG_FILE);
+
+    let config: MineginxConfig = match config {
+        Ok(v) => serde_yaml::from_slice(&v).map_err(|e| format!("failed to parse config file: '{CONFIG_FILE}': {e}"))?,
+        Err(e) if e.kind() == ErrorKind::NotFound => generate_config().map_err(|e| format!("config not found. failed to generate new one: {e}"))?,
+        Err(e) => return Err(format!("failed to read config file: '{CONFIG_FILE}', error: {e}"))
     };
-    return match serde_yaml::from_slice(&yaml) {
-        Ok(c) => Some(c),
-        Err(err) => {
-            error!("failed to parse config file: '{}': {err}", CONFIG_FILE);
-            None
-        }
-    }
+
+    Ok(config)
 }
 
-async fn generate_config() -> Option<MineginxConfig> {
+fn generate_config() -> Result<MineginxConfig, String> {
     info!("generate new configuration file");
     let default_server = MinecraftServerDescription {
         listen: "0.0.0.0:25565".to_string(),
@@ -159,34 +154,33 @@ async fn generate_config() -> Option<MineginxConfig> {
     };
     let yaml = match serde_yaml::to_string(&config) {
         Ok(x) => x,
-        Err(err) => {
-            error!("failed to serialize default configuration: {}", err);
-            return None;
-        }
+        Err(err) => return Err(format!("failed to serialize default configuration: {}", err))
     };
 
     if !Path::new("./config").exists() {
         if let Err(err) = fs::create_dir("./config") {
-            error!("failed to create config directory: {}", err);
-            return None;
+            return Err(format!("failed to create config directory: {}", err));
         };
     }
     if let Err(err) = fs::write("./config/mineginx.yaml", yaml) {
-        error!("failed to save default configuration: {}", err);
-        return None;
+        return Err(format!("failed to save default configuration: {}", err));
     }
 
-    return Some(config);
+    Ok(config)
 }
 
-async fn check_config() -> Option<MineginxConfig> {
+async fn check_config() -> Option<()> {
     info!("trying to parse config and exit");
-    let config = get_config().await;
-    match config {
-        Some(_) => info!("it's fine! let's try to run"),
-        None => error!("there are some errors")
-    };
-    config
+    match read_config() {
+        Ok(_) => {
+            info!("it's fine! let's try to run");
+            Some(())
+        },
+        Err(e) => {
+            error!("there are some errors: {e}");
+            None
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -206,11 +200,11 @@ async fn main() -> ExitCode {
     }
 
     info!("mineginx version: {} ({})", env!("MINEGINX_VERSION"), env!("MINEGINX_HASH"));
-    let config: Arc<MineginxConfig> = match get_config().await {
-        Some(x) => Arc::new(x),
-        None => match generate_config().await {
-            Some(x) => Arc::new(x),
-            None => return ExitCode::from(2)
+    let config: Arc<MineginxConfig> = match read_config() {
+        Ok(x) => Arc::new(x),
+        Err(e) => {
+            error!("failed to read config: {e}");
+            return  ExitCode::from(2);
         }
     };
     let mut listening = HashMap::<String, ListeningAddress>::new();
