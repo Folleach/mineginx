@@ -191,6 +191,12 @@ const CONFIG_FILE: &str = "./config/mineginx.yaml";
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {
     SimpleLogger::new().init().unwrap();
+
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("PANIC: {}", panic_info);
+        log::error!("panic occurred: {}", panic_info);
+    }));
+
     let mut args = env::args();
     if args.any(|x| &x == "-t") {
         return match check_config().await {
@@ -213,14 +219,22 @@ async fn main() -> ExitCode {
             continue;
         }
         info!("listening {}", &server.listen);
-        let listener = TcpListener::bind(&server.listen).await.unwrap();
+        let listener = match TcpListener::bind(&server.listen).await {
+            Ok(l) => l,
+            Err(e) => {
+                error!("failed to bind {}: {e}", &server.listen);
+                return ExitCode::from(3);
+            }
+        };
         let conf = config.clone();
         let task = tokio::spawn(async move {
             handle_address(&listener, conf).await;
         });
         listening.insert(server.listen.to_string(), ListeningAddress(task));
     }
-    tokio::signal::ctrl_c().await.unwrap();
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        error!("failed to listen for ctrl_c signal: {e}");
+    }
     info!("shutdown");
     ExitCode::from(0)
 }

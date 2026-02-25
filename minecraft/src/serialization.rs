@@ -9,6 +9,19 @@ use crate::{
 const SEGMENT_BITS: u32 = 0x7F;
 const CONTINUE_BIT: u32 = 0x80;
 
+/// Returns the number of bytes a VarInt value occupies when encoded.
+fn varint_size(value: i32) -> usize {
+    let mut value = value as u32;
+    let mut size = 0;
+    loop {
+        size += 1;
+        if (value & !SEGMENT_BITS) == 0 {
+            return size;
+        }
+        value >>= 7;
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ReadingError {
     Insufficient,
@@ -93,7 +106,7 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
     }
 
     pub fn data_len(&self) -> usize {
-        self.free - self.position + 1
+        self.free - self.position
     }
 
     pub fn take_buffer(&mut self) -> Vec<u8> {
@@ -160,8 +173,11 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
     where
         T: PacketDeserializer,
     {
-        if signature.length > self.data_len() {
-            match &self.fill_buffer_from_source(signature.length).await {
+        // signature.length includes the packet_id VarInt which was already consumed
+        // in read_signature, so subtract its encoded size to get the actual data length
+        let data_needed = signature.length.saturating_sub(varint_size(signature.packet_id));
+        if data_needed > self.data_len() {
+            match &self.fill_buffer_from_source(data_needed).await {
                 Ok(_) => {}
                 Err(_) => return Err(ReadingError::Closed),
             };
@@ -199,10 +215,6 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
         T::read(self)
     }
 
-    fn remain_len(&self) -> usize {
-        self.buffer.len() - self.position
-    }
-
     fn copy_buffer_to_start(&mut self) {
         let data_len = self.free - self.position;
         self.buffer.copy_within(self.position..self.free, 0);
@@ -211,7 +223,8 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
     }
 
     fn expand_buffer(&mut self) {
-        todo!()
+        let new_len = self.buffer.len() * 2;
+        self.buffer.resize(new_len, 0);
     }
 
     async fn fill_buffer_from_source(&mut self, required: usize) -> Result<(), ()> {
@@ -295,16 +308,15 @@ impl FieldReader for String {
     fn read<RW: AsyncRead + AsyncWrite + Unpin>(
         stream: &mut MinecraftStream<RW>,
     ) -> Result<Self, ReadingError> {
-        // todo: there is a bug - read_field changes position of the stream, but below can happen reading error if packet doesn't fully read
         let length = stream.read_field::<i32>()? as usize;
 
-        if length > stream.remain_len() {
+        if length > stream.data_len() {
             return Err(ReadingError::Insufficient);
         }
         let mut vec: Vec<u8> = vec![0; length];
         vec.copy_from_slice(&stream.buffer[stream.position..stream.position + length]);
         stream.position += length;
-        Ok(String::from_utf8(vec).unwrap())
+        String::from_utf8(vec).map_err(|_| ReadingError::Invalid)
     }
 }
 
