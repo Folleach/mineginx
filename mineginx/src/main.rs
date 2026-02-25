@@ -97,18 +97,23 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
     let (upstream_reader, upstream_writer) = upstream.into_split();
     let (client_close_sender, client_close_receiver) = oneshot::channel::<()>();
     let (upstream_close_sender, upstream_close_receiver) = oneshot::channel::<()>();
-    forward_stream(
+    let buf_size = upstream_server.buffer_size.map(|b| b as usize).unwrap_or(2048);
+    let h1 = forward_stream(
         client_close_sender,
         upstream_close_receiver,
         client_reader,
         upstream_writer,
-        if let Some(buffer_size) = upstream_server.buffer_size { buffer_size  as usize } else { 2048 });
-    forward_stream(
+        buf_size);
+    let h2 = forward_stream(
         upstream_close_sender,
         client_close_receiver,
         upstream_reader,
         client_writer,
-        if let Some(buffer_size) = upstream_server.buffer_size { buffer_size  as usize } else { 2048 });
+        buf_size);
+    // Wait for both forwarding tasks to finish so TCP connections are
+    // properly shut down before this handler exits
+    let _ = tokio::join!(h1, h2);
+    info!("connection closed (domain: {}, upstream: {})", &domain, upstream_server.proxy_pass);
 }
 
 async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>) {

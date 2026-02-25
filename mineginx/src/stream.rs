@@ -20,27 +20,25 @@ pub fn forward_stream(
         loop {
             tokio::select! {
                 _ = &mut close_by_other => {
-                    return;
+                    break;
                 },
                 res = reader.read(&mut buf) => {
                     match res {
-                        Ok(0) => {
-                            _ = close.send(());
-                            return;
-                        },
+                        Ok(0) | Err(_) => break,
                         Ok(size) => {
                             if writer.write_all(&buf[..size]).await.is_err() {
-                                _ = close.send(());
-                                return;
+                                break;
                             }
-                        },
-                        Err(_) => {
-                            _ = close.send(());
-                            return;
                         }
                     }
                 }
             }
         }
+        // Signal the other forwarding task to stop (dropping the sender
+        // causes the receiver to resolve, which triggers its close_by_other branch)
+        drop(close);
+        // Shut down write half so the remote end receives FIN immediately
+        // instead of waiting for its own keepalive/timeout to detect the dead connection
+        _ = writer.shutdown().await;
     })
 }
