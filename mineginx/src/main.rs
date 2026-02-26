@@ -1,8 +1,8 @@
 use std::{
-    borrow::BorrowMut, collections::HashMap, env, fs::{self}, io::ErrorKind, net::{SocketAddr, ToSocketAddrs}, path::Path, process::ExitCode, sync::Arc, time::Duration
+    borrow::BorrowMut, collections::HashMap, env, fs::{self}, io::ErrorKind, net::SocketAddr, path::Path, process::ExitCode, sync::Arc, time::Duration
 };
 use config::{MinecraftServerDescription, MineginxConfig};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use minecraft::{packets::{HandshakeC2SPacket, MinecraftPacket}, serialization::{truncate_to_zero, MinecraftStream}};
 use simple_logger::SimpleLogger;
 use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, sync::RwLock, task::JoinHandle, time::timeout};
@@ -22,11 +22,12 @@ struct ResolvedUpstream {
     buffer_size: Option<u32>,
 }
 
-/// Try to resolve an upstream hostname to a SocketAddr.
-fn try_resolve(proxy_pass: &str) -> Option<SocketAddr> {
-    match proxy_pass.to_socket_addrs() {
-        Ok(mut addrs) => addrs.next(),
-        Err(_) => None,
+/// Try to resolve an upstream hostname to a SocketAddr asynchronously.
+/// Uses a 2-second timeout to avoid blocking startup or connections.
+async fn try_resolve(proxy_pass: &str) -> Option<SocketAddr> {
+    match timeout(Duration::from_secs(2), tokio::net::lookup_host(proxy_pass)).await {
+        Ok(Ok(mut addrs)) => addrs.next(),
+        _ => None,
     }
 }
 
@@ -53,11 +54,14 @@ async fn read_handshake_packet(client: &mut MinecraftStream<&mut TcpStream>) -> 
 }
 
 async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resolved: Arc<RwLock<HashMap<String, ResolvedUpstream>>>) {
+    let peer = client.peer_addr().ok();
+    debug!("accepted connection from {:?}", peer);
     if let Err(e) = client.set_nodelay(true) {
         error!("failed to set no_delay for client: {}", e);
         return;
     }
     let mut minecraft = MinecraftStream::new(client.borrow_mut(), 4096);
+    debug!("reading handshake from {:?}", peer);
     let timeout_future = Duration::from_millis(config.handshake_timeout_ms.unwrap_or(10_000));
     let handshake_result = timeout(timeout_future, read_handshake_packet(&mut minecraft)).await;
     let handshake = match handshake_result {
@@ -76,6 +80,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
         }
     };
 
+    debug!("handshake complete from {:?}, domain: {}", peer, &handshake.domain);
     let domain = truncate_to_zero(&handshake.domain).to_string();
     let server_desc = match find_upstream_config(&domain, &config) {
         Some(x) => x.clone(),
@@ -95,7 +100,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
         Some(u) => u,
         None => {
             // Upstream wasn't resolved at startup — try now (container may have come online)
-            match try_resolve(&server_desc.proxy_pass) {
+            match try_resolve(&server_desc.proxy_pass).await {
                 Some(addr) => {
                     let entry = ResolvedUpstream {
                         proxy_pass: server_desc.proxy_pass.clone(),
@@ -276,7 +281,7 @@ async fn main() -> ExitCode {
         if resolved.contains_key(&server.proxy_pass) {
             continue;
         }
-        match try_resolve(&server.proxy_pass) {
+        match try_resolve(&server.proxy_pass).await {
             Some(addr) => {
                 info!("resolved upstream {} -> {}", &server.proxy_pass, addr);
                 resolved.insert(server.proxy_pass.clone(), ResolvedUpstream {
