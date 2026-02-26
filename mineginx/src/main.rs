@@ -168,8 +168,12 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
 
 async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>, resolved: Arc<RwLock<HashMap<String, ResolvedUpstream>>>) {
     loop {
+        debug!("accept loop waiting for connection");
         let (socket, _address) = match listener.accept().await {
-            Ok(x) => x,
+            Ok(x) => {
+                debug!("accept() returned a connection");
+                x
+            },
             Err(e) => {
                 error!("failed to accept client: {e}");
                 continue;
@@ -180,6 +184,7 @@ async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>, res
         tokio::spawn(async move {
             handle_client(socket, conf, res).await;
         });
+        debug!("spawned handler, looping back to accept");
     }
 }
 
