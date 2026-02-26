@@ -5,7 +5,7 @@ use config::{MinecraftServerDescription, MineginxConfig};
 use log::{error, info, warn};
 use minecraft::{packets::{HandshakeC2SPacket, MinecraftPacket}, serialization::{truncate_to_zero, MinecraftStream}};
 use simple_logger::SimpleLogger;
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, task::JoinHandle, time::timeout};
+use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, sync::RwLock, task::JoinHandle, time::timeout};
 use stream::forward_half;
 
 mod stream;
@@ -22,15 +22,21 @@ struct ResolvedUpstream {
     buffer_size: Option<u32>,
 }
 
-fn find_upstream(domain: &str, config: &MineginxConfig, resolved: &HashMap<String, ResolvedUpstream>) -> Option<ResolvedUpstream> {
-    // Strip trailing dot from client domain — Minecraft clients send FQDN
-    // (e.g. "mc.kaydax.xyz.") but configs typically use bare names
+/// Try to resolve an upstream hostname to a SocketAddr.
+fn try_resolve(proxy_pass: &str) -> Option<SocketAddr> {
+    match proxy_pass.to_socket_addrs() {
+        Ok(mut addrs) => addrs.next(),
+        Err(_) => None,
+    }
+}
+
+fn find_upstream_config<'a>(domain: &str, config: &'a MineginxConfig) -> Option<&'a MinecraftServerDescription> {
     let domain = domain.trim_end_matches('.');
     for x in &config.servers {
         for server_name in &x.server_names {
             let cfg_name = server_name.trim_end_matches('.');
             if cfg_name.eq_ignore_ascii_case(domain) {
-                return resolved.get(&x.proxy_pass).cloned();
+                return Some(x);
             }
         }
     }
@@ -46,7 +52,7 @@ async fn read_handshake_packet(client: &mut MinecraftStream<&mut TcpStream>) -> 
     Ok(handshake)
 }
 
-async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resolved: Arc<HashMap<String, ResolvedUpstream>>) {
+async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resolved: Arc<RwLock<HashMap<String, ResolvedUpstream>>>) {
     if let Err(e) = client.set_nodelay(true) {
         error!("failed to set no_delay for client: {}", e);
         return;
@@ -71,11 +77,41 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
     };
 
     let domain = truncate_to_zero(&handshake.domain).to_string();
-    let upstream = match find_upstream(&domain, &config, &resolved) {
-        Some(x) => x,
+    let server_desc = match find_upstream_config(&domain, &config) {
+        Some(x) => x.clone(),
         None => {
             warn!("there is no upstream for domain {:#?}", &domain);
             return;
+        }
+    };
+
+    // Look up the pre-resolved address, or try resolving on-the-fly
+    // for upstreams that weren't available at startup
+    let upstream = {
+        let cache = resolved.read().await;
+        cache.get(&server_desc.proxy_pass).cloned()
+    };
+    let upstream = match upstream {
+        Some(u) => u,
+        None => {
+            // Upstream wasn't resolved at startup — try now (container may have come online)
+            match try_resolve(&server_desc.proxy_pass) {
+                Some(addr) => {
+                    let entry = ResolvedUpstream {
+                        proxy_pass: server_desc.proxy_pass.clone(),
+                        addr,
+                        buffer_size: server_desc.buffer_size,
+                    };
+                    info!("lazily resolved upstream {} -> {}", &server_desc.proxy_pass, addr);
+                    let mut cache = resolved.write().await;
+                    cache.insert(server_desc.proxy_pass.clone(), entry.clone());
+                    entry
+                },
+                None => {
+                    error!("failed to resolve upstream '{}' for domain {:#?}", &server_desc.proxy_pass, &domain);
+                    return;
+                }
+            }
         }
     };
 
@@ -125,7 +161,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
     info!("connection closed (domain: {}, upstream: {})", &domain, upstream.proxy_pass);
 }
 
-async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>, resolved: Arc<HashMap<String, ResolvedUpstream>>) {
+async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>, resolved: Arc<RwLock<HashMap<String, ResolvedUpstream>>>) {
     loop {
         let (socket, _address) = match listener.accept().await {
             Ok(x) => x,
@@ -233,32 +269,28 @@ async fn main() -> ExitCode {
     // use raw SocketAddr and never touch DNS. On musl (used in scratch
     // containers), getaddrinfo() is synchronous and blocks tokio's
     // blocking threadpool, which can stall the accept loop.
+    // Upstreams that fail to resolve are skipped — they'll be resolved
+    // lazily when a client first connects to them.
     let mut resolved = HashMap::<String, ResolvedUpstream>::new();
     for server in &config.servers {
         if resolved.contains_key(&server.proxy_pass) {
             continue;
         }
-        let addr = match server.proxy_pass.to_socket_addrs() {
-            Ok(mut addrs) => match addrs.next() {
-                Some(a) => a,
-                None => {
-                    error!("failed to resolve upstream '{}': no addresses returned", &server.proxy_pass);
-                    return ExitCode::from(4);
-                }
+        match try_resolve(&server.proxy_pass) {
+            Some(addr) => {
+                info!("resolved upstream {} -> {}", &server.proxy_pass, addr);
+                resolved.insert(server.proxy_pass.clone(), ResolvedUpstream {
+                    proxy_pass: server.proxy_pass.clone(),
+                    addr,
+                    buffer_size: server.buffer_size,
+                });
             },
-            Err(e) => {
-                error!("failed to resolve upstream '{}': {e}", &server.proxy_pass);
-                return ExitCode::from(4);
+            None => {
+                warn!("upstream '{}' not available yet, will resolve on first connection", &server.proxy_pass);
             }
-        };
-        info!("resolved upstream {} -> {}", &server.proxy_pass, addr);
-        resolved.insert(server.proxy_pass.clone(), ResolvedUpstream {
-            proxy_pass: server.proxy_pass.clone(),
-            addr,
-            buffer_size: server.buffer_size,
-        });
+        }
     }
-    let resolved = Arc::new(resolved);
+    let resolved = Arc::new(RwLock::new(resolved));
 
     let mut listening = HashMap::<String, ListeningAddress>::new();
     for server in &config.servers {
