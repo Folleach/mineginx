@@ -5,8 +5,8 @@ use config::{MinecraftServerDescription, MineginxConfig};
 use log::{error, info, warn};
 use minecraft::{packets::{HandshakeC2SPacket, MinecraftPacket}, serialization::{truncate_to_zero, MinecraftStream}};
 use simple_logger::SimpleLogger;
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, sync::oneshot, task::JoinHandle, time::timeout};
-use stream::forward_stream;
+use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, task::JoinHandle, time::timeout};
+use stream::forward_half;
 
 mod stream;
 mod config;
@@ -95,24 +95,17 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
 
     let (client_reader, client_writer) = client.into_split();
     let (upstream_reader, upstream_writer) = upstream.into_split();
-    let (client_close_sender, client_close_receiver) = oneshot::channel::<()>();
-    let (upstream_close_sender, upstream_close_receiver) = oneshot::channel::<()>();
-    let buf_size = upstream_server.buffer_size.map(|b| b as usize).unwrap_or(2048);
-    let h1 = forward_stream(
-        client_close_sender,
-        upstream_close_receiver,
-        client_reader,
-        upstream_writer,
-        buf_size);
-    let h2 = forward_stream(
-        upstream_close_sender,
-        client_close_receiver,
-        upstream_reader,
-        client_writer,
-        buf_size);
-    // Wait for both forwarding tasks to finish so TCP connections are
-    // properly shut down before this handler exits
-    let _ = tokio::join!(h1, h2);
+    let buf_size = upstream_server.buffer_size.map(|b| b as usize).unwrap_or(8192);
+
+    // Each direction gets its own spawned task so the tokio scheduler
+    // can freely interleave them with the accept loop and other connections.
+    // When one direction reads EOF it calls shutdown() on its writer,
+    // sending FIN to the remote — the opposite task then naturally reads
+    // EOF from its side and terminates. No explicit signaling needed.
+    let c2s = forward_half(client_reader, upstream_writer, buf_size);
+    let s2c = forward_half(upstream_reader, client_writer, buf_size);
+
+    let _ = tokio::join!(c2s, s2c);
     info!("connection closed (domain: {}, upstream: {})", &domain, upstream_server.proxy_pass);
 }
 
