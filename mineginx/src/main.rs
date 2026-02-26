@@ -2,9 +2,10 @@ use std::{
     borrow::BorrowMut, collections::HashMap, env, fs::{self}, io::ErrorKind, net::SocketAddr, path::Path, process::ExitCode, sync::Arc, time::Duration
 };
 use config::{MinecraftServerDescription, MineginxConfig};
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use minecraft::{packets::{HandshakeC2SPacket, MinecraftPacket}, serialization::{truncate_to_zero, MinecraftStream}};
 use simple_logger::SimpleLogger;
+use socket2::{Socket, Domain, Type};
 use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, sync::RwLock, task::JoinHandle, time::timeout};
 use stream::forward_half;
 
@@ -54,21 +55,16 @@ async fn read_handshake_packet(client: &mut MinecraftStream<&mut TcpStream>) -> 
 }
 
 async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resolved: Arc<RwLock<HashMap<String, ResolvedUpstream>>>) {
-    let peer = client.peer_addr().ok();
-    debug!("accepted connection from {:?}", peer);
     if let Err(e) = client.set_nodelay(true) {
         error!("failed to set no_delay for client: {}", e);
         return;
     }
     let mut minecraft = MinecraftStream::new(client.borrow_mut(), 4096);
-    debug!("reading handshake from {:?}", peer);
     let timeout_future = Duration::from_millis(config.handshake_timeout_ms.unwrap_or(10_000));
     let handshake_result = timeout(timeout_future, read_handshake_packet(&mut minecraft)).await;
     let handshake = match handshake_result {
         Ok(result) => match result {
-            Ok(handshake) => {
-                handshake
-            }
+            Ok(handshake) => handshake,
             Err(_) => {
                 error!("handshake failed for someone");
                 return;
@@ -79,8 +75,6 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
             return;
         }
     };
-
-    debug!("handshake complete from {:?}, domain: {}", peer, &handshake.domain);
     let domain = truncate_to_zero(&handshake.domain).to_string();
     let server_desc = match find_upstream_config(&domain, &config) {
         Some(x) => x.clone(),
@@ -92,14 +86,10 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
 
     // Look up the pre-resolved address, or try resolving on-the-fly
     // for upstreams that weren't available at startup
-    debug!("looking up upstream for {} from {:?}", &server_desc.proxy_pass, peer);
     let upstream = {
-        debug!("acquiring read lock from {:?}", peer);
         let cache = resolved.read().await;
-        debug!("got read lock from {:?}", peer);
         cache.get(&server_desc.proxy_pass).cloned()
     };
-    debug!("released read lock from {:?}, found: {}", peer, upstream.is_some());
     let upstream = match upstream {
         Some(u) => u,
         None => {
@@ -172,12 +162,8 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
 
 async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>, resolved: Arc<RwLock<HashMap<String, ResolvedUpstream>>>) {
     loop {
-        debug!("accept loop waiting for connection");
-        let (socket, _address) = match listener.accept().await {
-            Ok(x) => {
-                debug!("accept() returned a connection");
-                x
-            },
+        let (socket, _addr) = match listener.accept().await {
+            Ok(x) => x,
             Err(e) => {
                 error!("failed to accept client: {e}");
                 continue;
@@ -188,7 +174,6 @@ async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>, res
         tokio::spawn(async move {
             handle_client(socket, conf, res).await;
         });
-        debug!("spawned handler, looping back to accept");
     }
 }
 
@@ -312,10 +297,41 @@ async fn main() -> ExitCode {
             continue;
         }
         info!("listening {}", &server.listen);
-        let listener = match TcpListener::bind(&server.listen).await {
+        // Use socket2 to create a socket with a large backlog (1024) to prevent
+        // connection resets when multiple clients try to connect simultaneously
+        let addr: SocketAddr = match server.listen.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                error!("failed to parse listen address {}: {e}", &server.listen);
+                return ExitCode::from(3);
+            }
+        };
+        let socket = match Socket::new(Domain::for_address(addr), Type::STREAM, None) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("failed to create socket for {}: {e}", &server.listen);
+                return ExitCode::from(3);
+            }
+        };
+        // Allow address reuse to avoid "address already in use" on restart
+        if let Err(e) = socket.set_reuse_address(true) {
+            error!("failed to set SO_REUSEADDR for {}: {e}", &server.listen);
+            return ExitCode::from(3);
+        }
+        if let Err(e) = socket.bind(&addr.into()) {
+            error!("failed to bind {}: {e}", &server.listen);
+            return ExitCode::from(3);
+        }
+        // Set backlog to 1024 to handle bursts of connections
+        if let Err(e) = socket.listen(1024) {
+            error!("failed to listen on {}: {e}", &server.listen);
+            return ExitCode::from(3);
+        }
+        socket.set_nonblocking(true).unwrap();
+        let listener = match TcpListener::from_std(socket.into()) {
             Ok(l) => l,
             Err(e) => {
-                error!("failed to bind {}: {e}", &server.listen);
+                error!("failed to create tokio listener for {}: {e}", &server.listen);
                 return ExitCode::from(3);
             }
         };
