@@ -5,11 +5,7 @@ use tokio::{
 };
 
 /// Forwards data from `reader` to `writer` until EOF or error,
-/// then shuts down the writer (sends TCP FIN to the remote end).
-///
-/// Each direction of a proxied connection gets its own spawned task
-/// so the tokio scheduler can interleave them with the accept loop
-/// and other connections freely.
+/// then shuts down the writer (sends TCP FIN).
 pub fn forward_half(
     mut reader: OwnedReadHalf,
     mut writer: OwnedWriteHalf,
@@ -27,9 +23,6 @@ pub fn forward_half(
                 }
             }
         }
-        // Shut down the write half so the remote end receives FIN.
-        // The other forwarding task (opposite direction) will then
-        // naturally read EOF and terminate on its own — no signaling needed.
         _ = writer.shutdown().await;
     })
 }

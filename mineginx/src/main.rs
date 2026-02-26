@@ -6,31 +6,11 @@ use log::{error, info, warn};
 use minecraft::{packets::{HandshakeC2SPacket, MinecraftPacket}, serialization::{truncate_to_zero, MinecraftStream}};
 use simple_logger::SimpleLogger;
 use socket2::{Socket, Domain, Type};
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, sync::RwLock, task::JoinHandle, time::timeout};
+use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, task::JoinHandle, time::timeout};
 use stream::forward_half;
 
 mod stream;
 mod config;
-
-/// Holds upstream info with a pre-resolved socket address so that
-/// per-connection connects skip DNS entirely. On musl + scratch containers,
-/// getaddrinfo() is synchronous and blocks the tokio blocking threadpool,
-/// which can stall the accept loop and block all new connections/pings.
-#[derive(Clone)]
-struct ResolvedUpstream {
-    proxy_pass: String,
-    addr: SocketAddr,
-    buffer_size: Option<u32>,
-}
-
-/// Try to resolve an upstream hostname to a SocketAddr asynchronously.
-/// Uses a 2-second timeout to avoid blocking startup or connections.
-async fn try_resolve(proxy_pass: &str) -> Option<SocketAddr> {
-    match timeout(Duration::from_secs(2), tokio::net::lookup_host(proxy_pass)).await {
-        Ok(Ok(mut addrs)) => addrs.next(),
-        _ => None,
-    }
-}
 
 fn find_upstream_config<'a>(domain: &str, config: &'a MineginxConfig) -> Option<&'a MinecraftServerDescription> {
     let domain = domain.trim_end_matches('.');
@@ -54,7 +34,7 @@ async fn read_handshake_packet(client: &mut MinecraftStream<&mut TcpStream>) -> 
     Ok(handshake)
 }
 
-async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resolved: Arc<RwLock<HashMap<String, ResolvedUpstream>>>) {
+async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
     if let Err(e) = client.set_nodelay(true) {
         error!("failed to set no_delay for client: {}", e);
         return;
@@ -84,43 +64,12 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
         }
     };
 
-    // Look up the pre-resolved address, or try resolving on-the-fly
-    // for upstreams that weren't available at startup
-    let upstream = {
-        let cache = resolved.read().await;
-        cache.get(&server_desc.proxy_pass).cloned()
-    };
-    let upstream = match upstream {
-        Some(u) => u,
-        None => {
-            // Upstream wasn't resolved at startup — try now (container may have come online)
-            match try_resolve(&server_desc.proxy_pass).await {
-                Some(addr) => {
-                    let entry = ResolvedUpstream {
-                        proxy_pass: server_desc.proxy_pass.clone(),
-                        addr,
-                        buffer_size: server_desc.buffer_size,
-                    };
-                    info!("lazily resolved upstream {} -> {}", &server_desc.proxy_pass, addr);
-                    let mut cache = resolved.write().await;
-                    cache.insert(server_desc.proxy_pass.clone(), entry.clone());
-                    entry
-                },
-                None => {
-                    error!("failed to resolve upstream '{}' for domain {:#?}", &server_desc.proxy_pass, &domain);
-                    return;
-                }
-            }
-        }
-    };
+    info!("new connection (protocol_version: {}, domain: {}, upstream: {})", &handshake.protocol_version, &domain, &server_desc.proxy_pass);
 
-    info!("new connection (protocol_version: {}, domain: {}, upstream: {})", &handshake.protocol_version, &domain, upstream.proxy_pass);
-
-    // Connect using the pre-resolved SocketAddr — no DNS lookup at connection time
-    let mut upstream_conn = match TcpStream::connect(upstream.addr).await {
+    let mut upstream_conn = match TcpStream::connect(&server_desc.proxy_pass).await {
         Ok(x) => x,
         Err(e) => {
-            error!("failed to connect upstream: {}, {e}", &upstream.proxy_pass);
+            error!("failed to connect upstream: {}, {e}", &server_desc.proxy_pass);
             return;
         }
     };
@@ -136,7 +85,6 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
         Ok(_) => { },
         Err(_) => return
     };
-    // flush unread buffer to the upstream
     match upstream_conn.write_all(&minecraft.take_buffer()).await {
         Ok(_) => {},
         Err(_) => {
@@ -146,21 +94,18 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
 
     let (client_reader, client_writer) = client.into_split();
     let (upstream_reader, upstream_writer) = upstream_conn.into_split();
-    let buf_size = upstream.buffer_size.map(|b| b as usize).unwrap_or(8192);
+    let buf_size = server_desc.buffer_size.map(|b| b as usize).unwrap_or(8192);
 
-    // Each direction gets its own spawned task so the tokio scheduler
-    // can freely interleave them with the accept loop and other connections.
-    // When one direction reads EOF it calls shutdown() on its writer,
-    // sending FIN to the remote — the opposite task then naturally reads
-    // EOF from its side and terminates. No explicit signaling needed.
+    // Each direction is a separate task. When one side hits EOF,
+    // it shuts down its writer (sends FIN), causing the other to EOF too.
     let c2s = forward_half(client_reader, upstream_writer, buf_size);
     let s2c = forward_half(upstream_reader, client_writer, buf_size);
 
     let _ = tokio::join!(c2s, s2c);
-    info!("connection closed (domain: {}, upstream: {})", &domain, upstream.proxy_pass);
+    info!("connection closed (domain: {}, upstream: {})", &domain, &server_desc.proxy_pass);
 }
 
-async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>, resolved: Arc<RwLock<HashMap<String, ResolvedUpstream>>>) {
+async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>) {
     loop {
         let (socket, _addr) = match listener.accept().await {
             Ok(x) => x,
@@ -170,9 +115,8 @@ async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>, res
             }
         };
         let conf = config.clone();
-        let res = resolved.clone();
         tokio::spawn(async move {
-            handle_client(socket, conf, res).await;
+            handle_client(socket, conf).await;
         });
     }
 }
@@ -264,41 +208,12 @@ async fn main() -> ExitCode {
         }
     };
 
-    // Pre-resolve all upstream DNS at startup so per-connection connects
-    // use raw SocketAddr and never touch DNS. On musl (used in scratch
-    // containers), getaddrinfo() is synchronous and blocks tokio's
-    // blocking threadpool, which can stall the accept loop.
-    // Upstreams that fail to resolve are skipped — they'll be resolved
-    // lazily when a client first connects to them.
-    let mut resolved = HashMap::<String, ResolvedUpstream>::new();
-    for server in &config.servers {
-        if resolved.contains_key(&server.proxy_pass) {
-            continue;
-        }
-        match try_resolve(&server.proxy_pass).await {
-            Some(addr) => {
-                info!("resolved upstream {} -> {}", &server.proxy_pass, addr);
-                resolved.insert(server.proxy_pass.clone(), ResolvedUpstream {
-                    proxy_pass: server.proxy_pass.clone(),
-                    addr,
-                    buffer_size: server.buffer_size,
-                });
-            },
-            None => {
-                warn!("upstream '{}' not available yet, will resolve on first connection", &server.proxy_pass);
-            }
-        }
-    }
-    let resolved = Arc::new(RwLock::new(resolved));
-
     let mut listening = HashMap::<String, ListeningAddress>::new();
     for server in &config.servers {
         if listening.contains_key(&server.listen) {
             continue;
         }
         info!("listening {}", &server.listen);
-        // Use socket2 to create a socket with a large backlog (1024) to prevent
-        // connection resets when multiple clients try to connect simultaneously
         let addr: SocketAddr = match server.listen.parse() {
             Ok(a) => a,
             Err(e) => {
@@ -313,7 +228,6 @@ async fn main() -> ExitCode {
                 return ExitCode::from(3);
             }
         };
-        // Allow address reuse to avoid "address already in use" on restart
         if let Err(e) = socket.set_reuse_address(true) {
             error!("failed to set SO_REUSEADDR for {}: {e}", &server.listen);
             return ExitCode::from(3);
@@ -322,7 +236,7 @@ async fn main() -> ExitCode {
             error!("failed to bind {}: {e}", &server.listen);
             return ExitCode::from(3);
         }
-        // Set backlog to 1024 to handle bursts of connections
+
         if let Err(e) = socket.listen(1024) {
             error!("failed to listen on {}: {e}", &server.listen);
             return ExitCode::from(3);
@@ -336,9 +250,8 @@ async fn main() -> ExitCode {
             }
         };
         let conf = config.clone();
-        let res = resolved.clone();
         let task = tokio::spawn(async move {
-            handle_address(&listener, conf, res).await;
+            handle_address(&listener, conf).await;
         });
         listening.insert(server.listen.to_string(), ListeningAddress(task));
     }
