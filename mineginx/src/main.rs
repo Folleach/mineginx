@@ -92,10 +92,14 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>, resol
 
     // Look up the pre-resolved address, or try resolving on-the-fly
     // for upstreams that weren't available at startup
+    debug!("looking up upstream for {} from {:?}", &server_desc.proxy_pass, peer);
     let upstream = {
+        debug!("acquiring read lock from {:?}", peer);
         let cache = resolved.read().await;
+        debug!("got read lock from {:?}", peer);
         cache.get(&server_desc.proxy_pass).cloned()
     };
+    debug!("released read lock from {:?}, found: {}", peer, upstream.is_some());
     let upstream = match upstream {
         Some(u) => u,
         None => {
