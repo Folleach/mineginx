@@ -1,21 +1,24 @@
 use std::{
-    borrow::BorrowMut, collections::HashMap, env, fs::{self}, io::ErrorKind, path::Path, process::ExitCode, sync::Arc, time::Duration
+    borrow::BorrowMut, collections::HashMap, env, fs::{self}, io::ErrorKind, net::SocketAddr, path::Path, process::ExitCode, sync::Arc, time::Duration
 };
 use config::{MinecraftServerDescription, MineginxConfig};
 use log::{error, info, warn};
 use minecraft::{packets::{HandshakeC2SPacket, MinecraftPacket}, serialization::{truncate_to_zero, MinecraftStream}};
 use simple_logger::SimpleLogger;
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, sync::oneshot, task::JoinHandle, time::timeout};
-use stream::forward_stream;
+use socket2::{Socket, Domain, Type};
+use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, task::JoinHandle, time::timeout};
+use stream::forward_half;
 
 mod stream;
 mod config;
 
-fn find_upstream(domain: &String, config: Arc<MineginxConfig>) -> Option<MinecraftServerDescription> {
+fn find_upstream_config<'a>(domain: &str, config: &'a MineginxConfig) -> Option<&'a MinecraftServerDescription> {
+    let domain = domain.trim_end_matches('.');
     for x in &config.servers {
         for server_name in &x.server_names {
-            if server_name == domain {
-                return Some(x.clone());
+            let cfg_name = server_name.trim_end_matches('.');
+            if cfg_name.eq_ignore_ascii_case(domain) {
+                return Some(x);
             }
         }
     }
@@ -41,9 +44,7 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
     let handshake_result = timeout(timeout_future, read_handshake_packet(&mut minecraft)).await;
     let handshake = match handshake_result {
         Ok(result) => match result {
-            Ok(handshake) => {
-                handshake
-            }
+            Ok(handshake) => handshake,
             Err(_) => {
                 error!("handshake failed for someone");
                 return;
@@ -54,26 +55,25 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
             return;
         }
     };
-
     let domain = truncate_to_zero(&handshake.domain).to_string();
-    let upstream_server = match find_upstream(&domain, config.clone()) {
-        Some(x) => x,
+    let server_desc = match find_upstream_config(&domain, &config) {
+        Some(x) => x.clone(),
         None => {
             warn!("there is no upstream for domain {:#?}", &domain);
             return;
         }
     };
 
-    info!("new connection (protocol_version: {}, domain: {}, upstream: {})", &handshake.protocol_version, &domain, upstream_server.proxy_pass);
+    info!("new connection (protocol_version: {}, domain: {}, upstream: {})", &handshake.protocol_version, &domain, &server_desc.proxy_pass);
 
-    let mut upstream = match TcpStream::connect(&upstream_server.proxy_pass).await {
+    let mut upstream_conn = match TcpStream::connect(&server_desc.proxy_pass).await {
         Ok(x) => x,
         Err(e) => {
-            error!("failed to connect upstream: {}, {e}", &upstream_server.proxy_pass);
+            error!("failed to connect upstream: {}, {e}", &server_desc.proxy_pass);
             return;
         }
     };
-    if let Err(e) = upstream.set_nodelay(true) {
+    if let Err(e) = upstream_conn.set_nodelay(true) {
         error!("failed to set no_delay for upstream: {}", e);
         return;
     }
@@ -81,12 +81,11 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
         Some(v) => v,
         None => return
     };
-    match upstream.write_all(&packet[0..packet.len()]).await {
+    match upstream_conn.write_all(&packet[0..packet.len()]).await {
         Ok(_) => { },
         Err(_) => return
     };
-    // flush unread buffer to the upstream
-    match upstream.write_all(&minecraft.take_buffer()).await {
+    match upstream_conn.write_all(&minecraft.take_buffer()).await {
         Ok(_) => {},
         Err(_) => {
             return;
@@ -94,26 +93,21 @@ async fn handle_client(mut client: TcpStream, config: Arc<MineginxConfig>) {
     }
 
     let (client_reader, client_writer) = client.into_split();
-    let (upstream_reader, upstream_writer) = upstream.into_split();
-    let (client_close_sender, client_close_receiver) = oneshot::channel::<()>();
-    let (upstream_close_sender, upstream_close_receiver) = oneshot::channel::<()>();
-    forward_stream(
-        client_close_sender,
-        upstream_close_receiver,
-        client_reader,
-        upstream_writer,
-        if let Some(buffer_size) = upstream_server.buffer_size { buffer_size  as usize } else { 2048 });
-    forward_stream(
-        upstream_close_sender,
-        client_close_receiver,
-        upstream_reader,
-        client_writer,
-        if let Some(buffer_size) = upstream_server.buffer_size { buffer_size  as usize } else { 2048 });
+    let (upstream_reader, upstream_writer) = upstream_conn.into_split();
+    let buf_size = server_desc.buffer_size.map(|b| b as usize).unwrap_or(8192);
+
+    // Each direction is a separate task. When one side hits EOF,
+    // it shuts down its writer (sends FIN), causing the other to EOF too.
+    let c2s = forward_half(client_reader, upstream_writer, buf_size);
+    let s2c = forward_half(upstream_reader, client_writer, buf_size);
+
+    let _ = tokio::join!(c2s, s2c);
+    info!("connection closed (domain: {}, upstream: {})", &domain, &server_desc.proxy_pass);
 }
 
 async fn handle_address(listener: &TcpListener, config: Arc<MineginxConfig>) {
     loop {
-        let (socket, _address) = match listener.accept().await {
+        let (socket, _addr) = match listener.accept().await {
             Ok(x) => x,
             Err(e) => {
                 error!("failed to accept client: {e}");
@@ -191,6 +185,12 @@ const CONFIG_FILE: &str = "./config/mineginx.yaml";
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {
     SimpleLogger::new().init().unwrap();
+
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("PANIC: {}", panic_info);
+        log::error!("panic occurred: {}", panic_info);
+    }));
+
     let mut args = env::args();
     if args.any(|x| &x == "-t") {
         return match check_config().await {
@@ -207,20 +207,57 @@ async fn main() -> ExitCode {
             return  ExitCode::from(2);
         }
     };
+
     let mut listening = HashMap::<String, ListeningAddress>::new();
     for server in &config.servers {
         if listening.contains_key(&server.listen) {
             continue;
         }
         info!("listening {}", &server.listen);
-        let listener = TcpListener::bind(&server.listen).await.unwrap();
+        let addr: SocketAddr = match server.listen.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                error!("failed to parse listen address {}: {e}", &server.listen);
+                return ExitCode::from(3);
+            }
+        };
+        let socket = match Socket::new(Domain::for_address(addr), Type::STREAM, None) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("failed to create socket for {}: {e}", &server.listen);
+                return ExitCode::from(3);
+            }
+        };
+        if let Err(e) = socket.set_reuse_address(true) {
+            error!("failed to set SO_REUSEADDR for {}: {e}", &server.listen);
+            return ExitCode::from(3);
+        }
+        if let Err(e) = socket.bind(&addr.into()) {
+            error!("failed to bind {}: {e}", &server.listen);
+            return ExitCode::from(3);
+        }
+
+        if let Err(e) = socket.listen(1024) {
+            error!("failed to listen on {}: {e}", &server.listen);
+            return ExitCode::from(3);
+        }
+        socket.set_nonblocking(true).unwrap();
+        let listener = match TcpListener::from_std(socket.into()) {
+            Ok(l) => l,
+            Err(e) => {
+                error!("failed to create tokio listener for {}: {e}", &server.listen);
+                return ExitCode::from(3);
+            }
+        };
         let conf = config.clone();
         let task = tokio::spawn(async move {
             handle_address(&listener, conf).await;
         });
         listening.insert(server.listen.to_string(), ListeningAddress(task));
     }
-    tokio::signal::ctrl_c().await.unwrap();
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        error!("failed to listen for ctrl_c signal: {e}");
+    }
     info!("shutdown");
     ExitCode::from(0)
 }
