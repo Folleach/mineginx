@@ -125,6 +125,12 @@ DNS records
 cargo b -r && ./target/release/mineginx
 ```
 
+## Run in container
+```bash
+docker run -v ./config:/app/config folleach/mineginx:v0.1.6
+```
+_Configure the network and ports as you wish_
+
 ## Limitations
 
 ### Max ~65k established connection to one upstream
