@@ -115,7 +115,7 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
 
     /// Reads signature of packet to the end  
     /// Such as `length` and `id`, doesn't touch the packet data  
-    /// https://wiki.vg/Protocol#Packet_format
+    /// https://minecraft.wiki/w/Java_Edition_protocol/Packets#Packet_format
     pub async fn read_signature(&mut self) -> Result<Signature, ReadingError> {
         let length: i32;
         let packet_id: i32;
@@ -168,7 +168,7 @@ impl<RW: AsyncRead + AsyncWrite + Unpin> MinecraftStream<RW> {
     }
 
     /// Reads `data` field of packet to the end  
-    /// https://wiki.vg/Protocol#Packet_format
+    /// https://minecraft.wiki/w/Java_Edition_protocol/Packets#Packet_format
     pub async fn read_data<T>(&mut self, signature: Signature) -> Result<T, ReadingError>
     where
         T: PacketDeserializer,
